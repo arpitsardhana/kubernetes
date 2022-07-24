@@ -207,14 +207,16 @@ type cpuAccumulator struct {
 	numCPUsNeeded      int
 	result             cpuset.CPUSet
 	numaOrSocketsFirst numaOrSocketsFirstFuncs
+	reservedTopo       topology.CPUDetails
 }
 
-func newCPUAccumulator(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) *cpuAccumulator {
+func newCPUAccumulator(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, reserved cpuset.CPUSet) *cpuAccumulator {
 	acc := &cpuAccumulator{
 		topo:          topo,
 		details:       topo.CPUDetails.KeepOnly(availableCPUs),
 		numCPUsNeeded: numCPUs,
 		result:        cpuset.NewCPUSet(),
+		reservedTopo:  topo.CPUDetails.KeepOnly(reserved),
 	}
 
 	if topo.NumSockets >= topo.NumNUMANodes {
@@ -227,16 +229,24 @@ func newCPUAccumulator(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, 
 }
 
 // Returns true if the supplied NUMANode is fully available in `topoDetails`.
+// Arpit: Fix here: NUMANodeisFree if number of cpus = total cpu - reserved_cpu_on_that_numa
 func (a *cpuAccumulator) isNUMANodeFree(numaID int) bool {
-	return a.details.CPUsInNUMANodes(numaID).Size() == a.topo.CPUDetails.CPUsInNUMANodes(numaID).Size()
+	numCPUs := a.topo.CPUDetails.CPUsInNUMANodes(numaID).Size()
+	//get_cpu_from_reserved_in_numaID
+	// numCPUs = numCPUs - reserved_cpu_in_numa
+	reservedCPU := a.reservedTopo.CPUsInNUMANodes(numaID)
+	numCPUs = numCPUs - reservedCPU.Size()
+	return a.details.CPUsInNUMANodes(numaID).Size() == numCPUs
 }
 
 // Returns true if the supplied socket is fully available in `topoDetails`.
+// Arpit: Fix here: SocketisFree if number of cpus = total cpu - reserved_cpu_on_that_socket
 func (a *cpuAccumulator) isSocketFree(socketID int) bool {
 	return a.details.CPUsInSockets(socketID).Size() == a.topo.CPUsPerSocket()
 }
 
 // Returns true if the supplied core is fully available in `topoDetails`.
+// Arpit: Fix here: CoreisFree if number of cpus = total cpu - reserved_cpu_on_that_core
 func (a *cpuAccumulator) isCoreFree(coreID int) bool {
 	return a.details.CPUsInCores(coreID).Size() == a.topo.CPUsPerCore()
 }
@@ -445,8 +455,8 @@ func (a *cpuAccumulator) iterateCombinations(n []int, k int, f func([]int) LoopC
 	helper(n, k, 0, []int{}, f)
 }
 
-func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
-	acc := newCPUAccumulator(topo, availableCPUs, numCPUs)
+func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, reserved cpuset.CPUSet) (cpuset.CPUSet, error) {
+	acc := newCPUAccumulator(topo, availableCPUs, numCPUs, reserved)
 	if acc.isSatisfied() {
 		return acc.result, nil
 	}
@@ -549,16 +559,16 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 // of size 'cpuGroupSize' according to the algorithm described above. This is
 // important, for example, to ensure that all CPUs (i.e. all hyperthreads) from
 // a single core are allocated together.
-func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int) (cpuset.CPUSet, error) {
+func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int, reserved cpuset.CPUSet) (cpuset.CPUSet, error) {
 	// If the number of CPUs requested cannot be handed out in chunks of
 	// 'cpuGroupSize', then we just call out the packing algorithm since we
 	// can't distribute CPUs in this chunk size.
 	if (numCPUs % cpuGroupSize) != 0 {
-		return takeByTopologyNUMAPacked(topo, availableCPUs, numCPUs)
+		return takeByTopologyNUMAPacked(topo, availableCPUs, numCPUs, reserved)
 	}
 
 	// Otherwise build an accumulator to start allocating CPUs from.
-	acc := newCPUAccumulator(topo, availableCPUs, numCPUs)
+	acc := newCPUAccumulator(topo, availableCPUs, numCPUs, reserved)
 	if acc.isSatisfied() {
 		return acc.result, nil
 	}
@@ -737,7 +747,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 		// size 'cpuGroupSize' from 'bestCombo'.
 		distribution := (numCPUs / len(bestCombo) / cpuGroupSize) * cpuGroupSize
 		for _, numa := range bestCombo {
-			cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution)
+			cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, reserved)
 			acc.take(cpus)
 		}
 
@@ -752,7 +762,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 				if acc.details.CPUsInNUMANodes(numa).Size() < cpuGroupSize {
 					continue
 				}
-				cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), cpuGroupSize)
+				cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), cpuGroupSize, reserved)
 				acc.take(cpus)
 				remainder -= cpuGroupSize
 			}
@@ -776,5 +786,5 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 
 	// If we never found a combination of NUMA nodes that we could properly
 	// distribute CPUs across, fall back to the packing algorithm.
-	return takeByTopologyNUMAPacked(topo, availableCPUs, numCPUs)
+	return takeByTopologyNUMAPacked(topo, availableCPUs, numCPUs, reserved)
 }

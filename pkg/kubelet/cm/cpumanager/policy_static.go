@@ -135,7 +135,7 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 		//
 		// For example: Given a system with 8 CPUs available and HT enabled,
 		// if numReservedCPUs=2, then reserved={0,4}
-		reserved, _ = policy.takeByTopology(allCPUs, numReservedCPUs)
+		reserved, _ = policy.takeByTopology(allCPUs, numReservedCPUs, cpuset.NewCPUSet())
 	}
 
 	if reserved.Size() != numReservedCPUs {
@@ -335,7 +335,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 			numAlignedToAlloc = numCPUs
 		}
 
-		alignedCPUs, err := p.takeByTopology(alignedCPUs, numAlignedToAlloc)
+		alignedCPUs, err := p.takeByTopology(alignedCPUs, numAlignedToAlloc, p.reserved)
 		if err != nil {
 			return cpuset.NewCPUSet(), err
 		}
@@ -344,7 +344,7 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 	}
 
 	// Get any remaining CPUs from what's leftover after attempting to grab aligned ones.
-	remainingCPUs, err := p.takeByTopology(allocatableCPUs.Difference(result), numCPUs-result.Size())
+	remainingCPUs, err := p.takeByTopology(allocatableCPUs.Difference(result), numCPUs-result.Size(), p.reserved)
 	if err != nil {
 		return cpuset.NewCPUSet(), err
 	}
@@ -398,15 +398,15 @@ func (p *staticPolicy) podGuaranteedCPUs(pod *v1.Pod) int {
 	return requestedByAppContainers
 }
 
-func (p *staticPolicy) takeByTopology(availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
+func (p *staticPolicy) takeByTopology(availableCPUs cpuset.CPUSet, numCPUs int, reserved cpuset.CPUSet) (cpuset.CPUSet, error) {
 	if p.options.DistributeCPUsAcrossNUMA {
 		cpuGroupSize := 1
 		if p.options.FullPhysicalCPUsOnly {
 			cpuGroupSize = p.topology.CPUsPerCore()
 		}
-		return takeByTopologyNUMADistributed(p.topology, availableCPUs, numCPUs, cpuGroupSize)
+		return takeByTopologyNUMADistributed(p.topology, availableCPUs, numCPUs, cpuGroupSize, reserved)
 	}
-	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs)
+	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs, reserved)
 }
 
 func (p *staticPolicy) GetTopologyHints(s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
