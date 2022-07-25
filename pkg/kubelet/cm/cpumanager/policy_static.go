@@ -399,14 +399,15 @@ func (p *staticPolicy) podGuaranteedCPUs(pod *v1.Pod) int {
 }
 
 func (p *staticPolicy) takeByTopology(availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
+	alignSort := true
 	if p.options.DistributeCPUsAcrossNUMA {
 		cpuGroupSize := 1
 		if p.options.FullPhysicalCPUsOnly {
 			cpuGroupSize = p.topology.CPUsPerCore()
 		}
-		return takeByTopologyNUMADistributed(p.topology, availableCPUs, numCPUs, cpuGroupSize)
+		return takeByTopologyNUMADistributed(p.topology, availableCPUs, numCPUs, cpuGroupSize, alignSort)
 	}
-	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs)
+	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs, alignSort)
 }
 
 func (p *staticPolicy) GetTopologyHints(s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
